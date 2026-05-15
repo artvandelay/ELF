@@ -17,6 +17,7 @@ The main conclusion from this exploration is narrow but useful: the local path i
 - `scripts/analyze_generations.py` for quick generation-quality signals such as distinct token ratios and adjacent repetition.
 - `src/interact.py` for an interactive terminal sampler with debug/runtime statistics.
 - `docs/EXPERIMENT_TIMELINE.md`, `docs/RESULTS.md`, and `CREDITS.md` for provenance, credit, and experiment history.
+- `docs/ELF_learning_notes.md` — a probe-style walkthrough of the ELF method (loss, two modes, length handling, when ELF is actually worth it vs GPT) captured during this exploration.
 
 Large local artifacts are intentionally not versioned. Regenerate datasets and checkpoints locally with the commands below.
 
