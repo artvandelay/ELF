@@ -43,7 +43,8 @@ from generation import run_generation
 from configs.config import load_config_from_yaml, apply_config_overrides, load_sampling_configs, SamplingConfig
 from modules.model import ELF_models
 from utils.data_utils import get_dataloader, prepare_batch, load_dataset, get_pad_token_id
-from train_step import train_step
+from utils.encoder_utils import encode_text
+from train_step import train_step, train_step_metal
 
 
 # Logging: no timestamps; suppress noisy checkpoint loggers; unbuffered stdout
@@ -271,11 +272,31 @@ def run_training(config):
             log_for_0(f"Error loading checkpoint: {e}")
             log_for_0("Continuing training from scratch")
 
-    state = jax_utils.replicate(state)
-    p_train_step = jax.pmap(
-        partial(train_step, encoder_apply_fn=encoder_model.apply, config=config),
-        axis_name="batch", donate_argnums=(0,),
-    )
+    use_single_device_metal = (jax.default_backend().lower() == "metal" and num_local_devices == 1)
+    if use_single_device_metal:
+        log_for_0("Using single-device JIT train step for Metal compatibility (with precomputed latents).")
+        encoder_params = jax_utils.unreplicate(encoder_params)
+        # Precompute x0 outside jitted step; use train_step_metal which accepts x0 directly
+        p_train_step = jax.jit(
+            partial(
+                train_step_metal,
+                config=config,
+                axis_name=None,
+            ),
+            donate_argnums=(0,),
+        )
+    else:
+        state = jax_utils.replicate(state)
+        p_train_step = jax.pmap(
+            partial(
+                train_step,
+                encoder_apply_fn=encoder_model.apply,
+                config=config,
+                axis_name="batch",
+            ),
+            axis_name="batch",
+            donate_argnums=(0,),
+        )
 
     os.makedirs(config.output_dir, exist_ok=True)
 
@@ -363,8 +384,29 @@ def run_training(config):
             rng, batch_rng = jax.random.split(rng, 2)
             batch = prepare_batch(batch, config, rng=batch_rng)
             batch = {k: v for k, v in batch.items() if isinstance(v, (np.ndarray, jnp.ndarray))}
-            batch = shard(batch)
-            state, metrics = p_train_step(state, encoder_params, batch=batch)
+
+            if use_single_device_metal:
+                # For Metal: precompute x0 outside jitted step to avoid large graph serialization
+                encoder_attention_mask = batch["encoder_attention_mask"]
+                if config.label_drop_prob > 0:
+                    drop = batch["label_drop_mask"][:, None, None]
+                    cond_mask = batch["cond_seq_mask"]
+                    block_mask = (1 - cond_mask)[:, :, None] * cond_mask[:, None, :]
+                    encoder_attention_mask = encoder_attention_mask * (1 - drop * block_mask)
+
+                x0 = encode_text(
+                    input_ids=batch["input_ids"],
+                    attention_mask=encoder_attention_mask,
+                    encoder_apply_fn=encoder_model.apply,
+                    encoder_params=encoder_params,
+                    latent_mean=config.latent_mean,
+                    latent_std=config.latent_std,
+                )
+                batch["x0"] = x0
+                state, metrics = p_train_step(state, batch=batch)
+            else:
+                batch = shard(batch)
+                state, metrics = p_train_step(state, encoder_params, batch=batch)
 
             # Sync only on first step to measure XLA compilation time;
             # float() on the loss below already forces a device-to-host sync.
@@ -378,7 +420,10 @@ def run_training(config):
 
             if global_step % config.log_freq == 0:
                 jax.tree_util.tree_map(lambda x: x.block_until_ready(), state.params)
-                gathered = get_metrics(train_metrics)
+                if use_single_device_metal:
+                    gathered = {k: jnp.stack([m[k] for m in train_metrics]) for k in train_metrics[0]}
+                else:
+                    gathered = get_metrics(train_metrics)
                 avg_loss = float(jnp.mean(gathered["loss"]))
                 avg_l2_loss = float(jnp.mean(gathered["l2_loss"]))
                 avg_ce_loss = float(jnp.mean(gathered["ce_loss"]))
@@ -419,22 +464,28 @@ def run_training(config):
             if 0 < config.save_freq < 1:
                 progress = epoch + (global_step - epoch * steps_per_epoch) / steps_per_epoch
                 if progress - last_save_epoch >= config.save_freq:
-                    save_checkpoint(state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
+                    ckpt_state = jax_utils.replicate(state) if use_single_device_metal else state
+                    save_checkpoint(ckpt_state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
                     log_for_0(f"Saved checkpoint at epoch {progress:.2f} (step {global_step})")
                     last_save_epoch = progress
 
         epoch_pbar.close()
         current_epoch = epoch + 1
 
-        state = jax_utils.replicate(jax_utils.unreplicate(state).replace(epoch=current_epoch))
+        if use_single_device_metal:
+            state = state.replace(epoch=current_epoch)
+        else:
+            state = jax_utils.replicate(jax_utils.unreplicate(state).replace(epoch=current_epoch))
 
         if config.save_freq >= 1 and current_epoch % config.save_freq == 0:
-            save_checkpoint(state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
+            ckpt_state = jax_utils.replicate(state) if use_single_device_metal else state
+            save_checkpoint(ckpt_state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
             log_for_0(f"Saved checkpoint at epoch {current_epoch} (step {global_step})")
 
         if config.eval_freq >= 1 and current_epoch % config.eval_freq == 0:
+            gen_state = jax_utils.replicate(state) if use_single_device_metal else state
             rng = run_generation(
-                state=state, encoder_params=encoder_params, encoder_apply_fn=encoder_model.apply,
+                state=gen_state, encoder_params=encoder_params, encoder_apply_fn=encoder_model.apply,
                 eval_dataset=eval_dataset, tokenizer=tokenizer, config=config,
                 rng=rng, local_batch_size=local_batch_size,
             )
@@ -444,7 +495,8 @@ def run_training(config):
     log_for_0("\n" + "=" * 60)
     log_for_0("Final Generation")
     log_for_0("=" * 60)
-    save_checkpoint(state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
+    ckpt_state = jax_utils.replicate(state) if use_single_device_metal else state
+    save_checkpoint(ckpt_state, config.output_dir, global_step, hf_repo_id=config.hf_repo_id)
     log_for_0(f"Final checkpoint saved to {config.output_dir}")
     if config.use_wandb and jax.process_index() == 0:
         wandb.finish()
