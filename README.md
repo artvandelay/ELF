@@ -12,6 +12,7 @@ The main conclusion from this exploration is narrow but useful: the local path i
 
 - `requirements-cpu.txt` for a CPU/JAX laptop environment.
 - `scripts/prepare_tinystories.py` to create a small local TinyStories T5-tokenized dataset.
+- `scripts/prepare_armman_hindi.py` to sample Hindi/Devanagari ANM chat pairs into T5-tokenized Arrow data for conditional `ELF-T` smoke runs (see below).
 - `src/configs/training_configs/train_tinystories_ELF-T.yml` and `src/configs/sampling_configs/laptop_sampling_configs.yml` for a tiny `ELF-T` run.
 - `ELF-T` and `ELF-XS` model factory variants in `src/modules/model.py`.
 - `scripts/analyze_generations.py` for quick generation-quality signals such as distinct token ratios and adjacent repetition.
@@ -63,6 +64,28 @@ python interact.py \
 ```
 
 The interactive checkpoint used in this exploration is unconditional. Typed prompts are recorded in the session log for your notes, but they do not condition generation unless you train or load a conditional checkpoint.
+
+### Optional: ARMMAN Hindi conditional smoke (128 train / 16 eval)
+
+Requires `data/armman/train_qwen3.jsonl` (production-format chat JSONL). This path proves the ELF pipeline on multilingual clinical-style text; outputs are **not** medically reliable and are not comparable to Qwen SFT.
+
+```bash
+python scripts/prepare_armman_hindi.py \
+  --src data/armman/train_qwen3.jsonl \
+  --out_dir data/armman_t5_small_hindi \
+  --n_train 128 --n_eval 16 --seed 42
+
+cd src
+python train.py --config configs/training_configs/train_armman_hindi_ELF-T_smoke.yml
+# Checkpoint and samples under ../outputs/elf_t-armman-hindi-smoke/
+
+python eval.py \
+  --config ../outputs/elf_t-armman-hindi-smoke/config.yml \
+  --checkpoint_path ../outputs/elf_t-armman-hindi-smoke/checkpoint_32 \
+  --use_cpu
+```
+
+Long runs: use a `tmux` session and `tee` the log as in your usual workflow.
 
 ## Experiment Status
 

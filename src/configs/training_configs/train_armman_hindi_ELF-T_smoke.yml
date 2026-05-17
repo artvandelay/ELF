@@ -1,0 +1,63 @@
+# Smoke: ELF-T on small Hindi-only ARMMAN conditional dataset (see scripts/prepare_armman_hindi.py).
+
+data_path: "../data/armman_t5_small_hindi/train"
+eval_data_path: "../data/armman_t5_small_hindi/eval"
+# Must fit cond + answer after concat; align with prepare_armman_hindi defaults.
+max_length: 512
+max_input_length: 192
+pad_token: "eos"
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-T
+bottleneck_dim: 64
+num_time_tokens: 2
+num_self_cond_cfg_tokens: 2
+num_model_mode_tokens: 2
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 5.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+
+label_drop_prob: 0.1
+self_cond_prob: 0.5
+
+epochs: 2
+global_batch_size: 8
+blr: 0.02
+weight_decay: 0.0
+warmup_epochs: 0.5
+warmup_steps: -1
+optimizer: adamw
+
+ema_decay1: 0.999
+
+sampling_configs_path: "configs/sampling_configs/armman_smoke_sampling.yml"
+num_samples: 8
+
+online_eval: false
+
+log_freq: 4
+save_freq: 1
+eval_freq: 1
+
+output_dir: "../outputs/elf_t-armman-hindi-smoke"
+hf_repo_id: null
+resume: null
+
+use_wandb: false
+wandb_project: elf
+wandb_entity: null
+wandb_run_name: elf_t-armman-hindi-smoke
+
+seed: 42

@@ -1,0 +1,60 @@
+# Fine-tune: ELF-B initialized from official OWT checkpoint on mined Latin dataset.
+
+data_path: "../data/hrptm_t5_small_latin_large/train"
+eval_data_path: "../data/hrptm_t5_small_latin_large/eval"
+max_length: 512
+max_input_length: 192
+pad_token: eos
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-B
+bottleneck_dim: 128
+num_time_tokens: 4
+num_self_cond_cfg_tokens: 4
+num_model_mode_tokens: 4
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 1.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+
+label_drop_prob: 0.1
+self_cond_prob: 0.5
+
+epochs: 20
+global_batch_size: 32
+blr: 0.0003
+weight_decay: 0.0
+warmup_steps: 200
+optimizer: adamw
+
+ema_decay1: 0.999
+
+sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
+num_samples: 32
+online_eval: false
+
+log_freq: 20
+save_freq: 1
+eval_freq: 1
+
+output_dir: "../outputs/elf_b-hrptm-latin-ft"
+hf_repo_id: null
+resume: "embedded-language-flows/ELF-B-owt"
+
+use_wandb: false
+wandb_project: elf
+wandb_entity: null
+wandb_run_name: elf_b-hrptm-latin-ft
+
+seed: 42

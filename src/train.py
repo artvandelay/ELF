@@ -243,7 +243,30 @@ def run_training(config):
             state, resume_step = load_checkpoint(ckpt_path, state)
             resume_epoch_fractional = float(state.epoch)
             start_epoch = int(state.epoch)
-            log_for_0(f"Resumed from step {resume_step} (epoch {resume_epoch_fractional:.2f})")
+            # Fine-tune-from-pretrained heuristic: when `resume` points at an
+            # external source (HF repo id, or any path outside our own
+            # output_dir), we treat this as initialization rather than a true
+            # resume — keep weights + EMA, but reset optimizer/step/epoch so
+            # the run honors the local config's `epochs`/`save_freq`. Resumes
+            # from our own output_dir always behave as continue-training,
+            # even if the user later raises `config.epochs`.
+            resume_norm = os.path.normpath(os.path.abspath(config.resume))
+            output_norm = os.path.normpath(os.path.abspath(config.output_dir))
+            is_external_init = not resume_norm.startswith(output_norm)
+            if is_external_init and start_epoch >= config.epochs:
+                log_for_0(
+                    f"External init from {config.resume} reports epoch {start_epoch} "
+                    f">= target epochs {config.epochs}; keeping weights/EMA, "
+                    "resetting step/epoch/optimizer for fine-tune"
+                )
+                state = state.replace(
+                    opt_state=optimizer.init(state.params),
+                    step=0,
+                    epoch=0,
+                )
+                start_epoch, resume_step, resume_epoch_fractional = 0, 0, 0.0
+            else:
+                log_for_0(f"Resumed from step {resume_step} (epoch {resume_epoch_fractional:.2f})")
         except Exception as e:
             log_for_0(f"Error loading checkpoint: {e}")
             log_for_0("Continuing training from scratch")

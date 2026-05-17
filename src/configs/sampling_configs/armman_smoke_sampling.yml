@@ -1,0 +1,6 @@
+# Minimal conditional sampling for CPU smoke runs (fast).
+- sampling_method: ode
+  num_sampling_steps: [8]
+  cfgs: [1]
+  self_cond_cfg_scales: [1.0]
+  time_schedule: logit_normal

@@ -77,6 +77,16 @@ def parse_args():
     parser.add_argument("--cfg", type=float, default=1.0, help="Classifier-free guidance scale.")
     parser.add_argument("--quiet_jax", action="store_true", help="Reduce JAX/backend logging.")
     parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=("auto", "cpu", "gpu", "metal", "tpu"),
+        help=(
+            "Device used for model/state initialization: auto (default backend), "
+            "cpu, gpu, metal (alias of gpu), or tpu."
+        ),
+    )
+    parser.add_argument(
         "--log_path",
         default=None,
         help="JSONL session log path. Defaults to <config.output_dir>/interactive_logs/<timestamp>.jsonl.",
@@ -84,10 +94,31 @@ def parse_args():
     parser.add_argument(
         "--use_cpu",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Initialize model/state on CPU. Defaults to true for laptop runs.",
+        default=None,
+        help="Deprecated alias for --device cpu/auto (use --use_cpu or --no-use_cpu).",
     )
     return parser.parse_args()
+
+
+def resolve_init_device(device_name: str):
+    """Resolve init device. Metal maps to JAX GPU backend."""
+    requested = (device_name or "auto").lower()
+    backend = "gpu" if requested == "metal" else requested
+    if backend == "auto":
+        return "auto", None
+    try:
+        devices = jax.local_devices(backend=backend)
+    except Exception as exc:
+        raise ValueError(
+            f"Requested init device backend '{requested}' is unavailable. "
+            f"Default backend is '{jax.default_backend()}'. Error: {exc}"
+        ) from exc
+    if not devices:
+        raise ValueError(
+            f"Requested init device backend '{requested}' has no local devices. "
+            f"Default backend is '{jax.default_backend()}'."
+        )
+    return requested, devices[0]
 
 
 def tokenize(text):
@@ -159,8 +190,14 @@ class InteractiveSampler:
         self.effective_batch_size = max(1, self.batch_size // self.num_local_devices) * self.num_local_devices
         self.per_device_batch = self.effective_batch_size // self.num_local_devices
 
-        cpu_device = jax.local_devices(backend="cpu")[0] if args.use_cpu else None
-        cpu_ctx = jax.default_device(cpu_device) if args.use_cpu else contextlib.nullcontext()
+        selected_device = "cpu" if args.use_cpu is True else args.device
+        self.init_device_mode, init_device = resolve_init_device(selected_device)
+        init_ctx = jax.default_device(init_device) if init_device is not None else contextlib.nullcontext()
+        logger.info(
+            "JAX default backend: %s | init device mode: %s",
+            jax.default_backend(),
+            self.init_device_mode,
+        )
 
         logger.info("Loading tokenizer and model config...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.tokenizer_name or self.config.encoder_model_name)
@@ -173,7 +210,7 @@ class InteractiveSampler:
         rng = jax.random.PRNGKey(self.config.seed)
         rng, init_rng, dropout_rng = jax.random.split(rng, 3)
         input_dim = 2 * self.d_model if self.config.self_cond_prob > 0 else self.d_model
-        with cpu_ctx:
+        with init_ctx:
             dummy_x = jnp.ones((1, self.config.max_length, input_dim))
             dummy_t = jnp.ones((1,))
             dummy_self_cond_cfg_scale = (
@@ -236,7 +273,10 @@ class InteractiveSampler:
         print("\nDebug")
         print(f"  model: {self.config.model} ({self.param_count:,} params)")
         print(f"  checkpoint step/epoch: {int(self.state_unreplicated.step)}/{int(self.state_unreplicated.epoch)}")
-        print(f"  backend/devices: {jax.default_backend()} / {self.num_local_devices}")
+        print(
+            f"  backend/devices: {jax.default_backend()} / {self.num_local_devices} "
+            f"(init mode: {self.init_device_mode})"
+        )
         print(f"  max_length: {self.config.max_length}, d_model: {self.d_model}")
         print(f"  samples: {self.samples}, batch_size: {self.effective_batch_size}, steps: {self.steps}")
         print(f"  sampler: {self.sampling_config.sampling_method}, cfg: {self.cfg}, sc-cfg: {self.self_cond_cfg}")

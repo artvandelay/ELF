@@ -1,0 +1,60 @@
+# One-extra-epoch continuation from completed smoke checkpoint.
+
+data_path: "../data/hrptm_t5_small_latin_large/train"
+eval_data_path: "../data/hrptm_t5_small_latin_large/eval"
+max_length: 384
+max_input_length: 128
+pad_token: eos
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-M
+bottleneck_dim: 128
+num_time_tokens: 4
+num_self_cond_cfg_tokens: 4
+num_model_mode_tokens: 4
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 1.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+
+label_drop_prob: 0.1
+self_cond_prob: 0.5
+
+epochs: 3
+global_batch_size: 4
+blr: 0.0001
+weight_decay: 0.0
+warmup_steps: 100
+optimizer: adamw
+
+ema_decay1: 0.999
+
+sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
+num_samples: 8
+online_eval: false
+
+log_freq: 5
+save_freq: 0.5
+eval_freq: 1
+
+output_dir: "../outputs/elf_m-hrptm-latin-ft-smoke"
+hf_repo_id: null
+resume: "../outputs/elf_m-hrptm-latin-ft-smoke/checkpoint_978"
+
+use_wandb: false
+wandb_project: elf
+wandb_entity: null
+wandb_run_name: elf_m-hrptm-latin-ft-smoke-plus1
+
+seed: 42

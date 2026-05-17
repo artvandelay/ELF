@@ -59,10 +59,41 @@ def parse_args():
         help="Path to checkpoint file (e.g. outputs/elf_b-owt/checkpoint_19000) or HF repo id.",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=("auto", "cpu", "gpu", "metal", "tpu"),
+        help=(
+            "Device used for model/state initialization: auto (default backend), "
+            "cpu, gpu, metal (alias of gpu), or tpu."
+        ),
+    )
+    parser.add_argument(
         "--use_cpu", action="store_true",
-        help="Host model init, train state template, and encoder/state replication on CPU",
+        help="Deprecated alias for --device cpu.",
     )
     return parser.parse_args()
+
+
+def resolve_init_device(device_name: str):
+    """Resolve init device. Metal maps to JAX GPU backend."""
+    requested = (device_name or "auto").lower()
+    backend = "gpu" if requested == "metal" else requested
+    if backend == "auto":
+        return "auto", None
+    try:
+        devices = jax.local_devices(backend=backend)
+    except Exception as exc:
+        raise ValueError(
+            f"Requested init device backend '{requested}' is unavailable. "
+            f"Default backend is '{jax.default_backend()}'. Error: {exc}"
+        ) from exc
+    if not devices:
+        raise ValueError(
+            f"Requested init device backend '{requested}' has no local devices. "
+            f"Default backend is '{jax.default_backend()}'."
+        )
+    return requested, devices[0]
 
 
 def main():
@@ -77,10 +108,16 @@ def main():
     num_devices = jax.device_count()
     num_local_devices = jax.local_device_count()
     num_hosts = jax.process_count()
-    cpu_device = jax.local_devices(backend="cpu")[0] if args.use_cpu else None
+    selected_device = "cpu" if args.use_cpu else args.device
+    selected_device, init_device = resolve_init_device(selected_device)
 
-    def cpu_ctx():
-        return jax.default_device(cpu_device) if args.use_cpu else contextlib.nullcontext()
+    def init_ctx():
+        return jax.default_device(init_device) if init_device is not None else contextlib.nullcontext()
+
+    log_for_0(
+        f"JAX default backend: {jax.default_backend()} | "
+        f"init device mode: {selected_device}"
+    )
 
     if config.global_batch_size is not None:
         log_for_0(f"Using global batch size for evaluation: {config.global_batch_size}")
@@ -147,7 +184,7 @@ def main():
     rng, init_rng, dropout_rng = jax.random.split(rng, 3)
     max_length = config.max_length
 
-    with cpu_ctx():
+    with init_ctx():
         # 2x dim if self_cond_prob > 0 to initialize self_cond_proj layer
         _text_enc_dim = encoder_config.d_model
         input_dim = 2 * _text_enc_dim if config.self_cond_prob > 0 else _text_enc_dim
@@ -175,7 +212,7 @@ def main():
         x=dummy_x, t=dummy_t, deterministic=True,
         self_cond_cfg_scale=dummy_self_cond_cfg_scale,
     )
-    with cpu_ctx():
+    with init_ctx():
         elf_params = model.init(init_rng, **init_args)
         log_for_0("\n" + model.tabulate(init_rng, **init_args))
         log_for_0("ELF initialization complete")
@@ -187,7 +224,7 @@ def main():
     # Create Train State Template
     # ============================================
     optimizer = optax.adamw(learning_rate=1e-4)
-    with cpu_ctx():
+    with init_ctx():
         state = TrainState.create(
             apply_fn=model.apply,
             params=elf_params["params"],
